@@ -96,40 +96,77 @@ export function SegmentStep({
     canvas.width = canvasSize.w;
     canvas.height = canvasSize.h;
 
-    const draw = () => {
+    const loadImage = (src: string): Promise<HTMLImageElement> =>
+      new Promise((res, rej) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => res(img);
+        img.onerror = rej;
+        img.src = src;
+      });
+
+    const draw = async () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (imageRef.current) {
         ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
       }
-      // Draw segment overlays
-      segments.forEach((seg) => {
+      // Draw segment mask overlays
+      for (const seg of segments) {
         if (!seg.visible) return;
         const isSelected = seg.id === selectedSegmentId;
         const color = SEGMENT_COLORS[seg.label] ?? "#6366f1";
 
-        // Draw click point circle
+        // Draw mask image as colored overlay if available
+        if (seg.maskData && seg.maskData.startsWith("http")) {
+          try {
+            const maskImg = await loadImage(seg.maskData);
+            // Draw mask with color tint using offscreen canvas
+            const offscreen = document.createElement("canvas");
+            offscreen.width = canvas.width;
+            offscreen.height = canvas.height;
+            const offCtx = offscreen.getContext("2d")!;
+            offCtx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+            // Apply color tint
+            offCtx.globalCompositeOperation = "source-in";
+            offCtx.fillStyle = color + (isSelected ? "99" : "66");
+            offCtx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(offscreen, 0, 0);
+            // Draw border if selected
+            if (isSelected) {
+              ctx.save();
+              ctx.globalAlpha = 0.8;
+              ctx.strokeStyle = color;
+              ctx.lineWidth = 2;
+              ctx.drawImage(offscreen, 0, 0);
+              ctx.restore();
+            }
+          } catch {
+            // fallback to dot
+          }
+        }
+
+        // Always draw click point dot + label
         const px = seg.clickPoint.x * canvas.width;
         const py = seg.clickPoint.y * canvas.height;
         ctx.beginPath();
-        ctx.arc(px, py, isSelected ? 10 : 7, 0, Math.PI * 2);
-        ctx.fillStyle = color + (isSelected ? "cc" : "88");
+        ctx.arc(px, py, isSelected ? 8 : 5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
         ctx.fill();
-        ctx.lineWidth = isSelected ? 2 : 1.5;
-        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#fff";
         ctx.stroke();
 
-        // Small label tag
-        ctx.font = "bold 11px Inter, sans-serif";
-        ctx.fillStyle = color;
+        // Label tag
+        ctx.font = "bold 11px sans-serif";
         const labelText = seg.label;
         const tw = ctx.measureText(labelText).width;
-        ctx.fillStyle = "rgba(10,12,18,0.75)";
+        ctx.fillStyle = "rgba(10,12,18,0.8)";
         ctx.beginPath();
         ctx.roundRect(px + 12, py - 10, tw + 10, 18, 4);
         ctx.fill();
         ctx.fillStyle = color;
         ctx.fillText(labelText, px + 17, py + 3);
-      });
+      }
 
       // Hover crosshair
       if (hoverPoint) {
@@ -156,6 +193,7 @@ export function SegmentStep({
     } else {
       draw();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments, selectedSegmentId, canvasSize, uploadedImage, hoverPoint]);
 
   const getRelativePoint = useCallback(
