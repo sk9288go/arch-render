@@ -27,7 +27,7 @@
     "next": "14.2.35",
     "react": "^18",
     "react-dom": "^18",
-    "react-konva": "^19.2.3",
+    "react-konva": "^18.2.10",
     "replicate": "^1.4.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss-animate": "^1.0.7"
