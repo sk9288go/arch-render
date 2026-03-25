@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toReplicateImageUrl } from "@/lib/uploadImage";
 
 // Mock depth map - a grey gradient image
 const MOCK_DEPTH_URL =
@@ -18,13 +19,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Normalize to a value Replicate accepts (data URLs and http URLs both work)
-    let replicateImage: string;
-    if (rawImage.startsWith("http://") || rawImage.startsWith("https://") || rawImage.startsWith("data:")) {
-      replicateImage = rawImage;
-    } else {
-      replicateImage = `data:image/jpeg;base64,${rawImage}`;
-    }
+    // Upload to get a public URL (Replicate requires HTTP URLs)
+    const replicateImage = await toReplicateImageUrl(rawImage);
 
     const apiToken = process.env.REPLICATE_API_TOKEN;
 

@@ -4,11 +4,27 @@ const MOCK_MASKS = [
   {
     id: "mock-1",
     score: 0.94,
-    // 1x1 transparent PNG as placeholder
     maskData:
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   },
 ];
+
+// Upload base64 image to a temp host and return public URL
+async function uploadBase64ToImgur(base64: string): Promise<string> {
+  // Strip data URI prefix
+  const data = base64.replace(/^data:image\/\w+;base64,/, "");
+  const res = await fetch("https://api.imgur.com/3/image", {
+    method: "POST",
+    headers: {
+      Authorization: "Client-ID 546c25a59c58ad7",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ image: data, type: "base64" }),
+  });
+  if (!res.ok) throw new Error(`Imgur upload failed: ${await res.text()}`);
+  const json = await res.json();
+  return json.data.link as string;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,17 +40,20 @@ export async function POST(request: NextRequest) {
 
     const apiToken = process.env.REPLICATE_API_TOKEN;
 
-    // Return mock if no API token
     if (!apiToken || apiToken === "your_token_here") {
       await new Promise((r) => setTimeout(r, 1200));
-      return NextResponse.json({
-        success: true,
-        masks: MOCK_MASKS,
-        isMock: true,
-      });
+      return NextResponse.json({ success: true, masks: MOCK_MASKS, isMock: true });
     }
 
-    // Real SAM2 via Replicate
+    // Replicate SAM2 requires a URL, not base64 — upload first
+    let imageUrl: string;
+    try {
+      imageUrl = await uploadBase64ToImgur(imageBase64);
+    } catch {
+      // fallback: pass base64 directly (may work with some model versions)
+      imageUrl = imageBase64;
+    }
+
     const response = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
@@ -42,10 +61,9 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        version:
-          "fe97b453a6455861e3bac769b441ca1f1086110da7466dbb65cf1eecfd60dc83",
+        version: "fe97b453a6455861e3bac769b441ca1f1086110da7466dbb65cf1eecfd60dc83",
         input: {
-          image: imageBase64,
+          image: imageUrl,
           input_points: [[point.x, point.y]],
           input_labels: [label ?? 1],
           multimask_output: true,
@@ -60,20 +78,17 @@ export async function POST(request: NextRequest) {
 
     const prediction = await response.json();
 
-    // Poll for completion
     let result = prediction;
     let attempts = 0;
     while (
       result.status !== "succeeded" &&
       result.status !== "failed" &&
-      attempts < 30
+      attempts < 60
     ) {
       await new Promise((r) => setTimeout(r, 1000));
       const pollRes = await fetch(
         `https://api.replicate.com/v1/predictions/${result.id}`,
-        {
-          headers: { Authorization: `Token ${apiToken}` },
-        }
+        { headers: { Authorization: `Token ${apiToken}` } }
       );
       result = await pollRes.json();
       attempts++;
@@ -83,7 +98,6 @@ export async function POST(request: NextRequest) {
       throw new Error(`Prediction failed: ${result.error}`);
     }
 
-    // SAM2 output can be array of URLs, object with masks key, or single string
     let outputArray: string[] = [];
     if (Array.isArray(result.output)) {
       outputArray = result.output;
@@ -105,10 +119,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Segment error:", error);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Segmentation failed",
-      },
+      { error: error instanceof Error ? error.message : "Segmentation failed" },
       { status: 500 }
     );
   }

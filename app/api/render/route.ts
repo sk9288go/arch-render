@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toReplicateImageUrl } from "@/lib/uploadImage";
 
 // Curated mock architectural render images
 const MOCK_RENDERS = [
@@ -86,9 +87,11 @@ export async function POST(request: NextRequest) {
         controlNet.lineartStrength ?? 0.5;
     }
 
-    const count = Math.min(numVariations ?? 1, 2); // reduce to 1-2 to avoid rate limits
+    // Upload image to get public URL for Replicate
+    const replicateImageUrl = await toReplicateImageUrl(imageBase64);
+
+    const count = Math.min(numVariations ?? 1, 2);
     const predPromises = Array.from({ length: count }, async (_, i) => {
-      // Stagger requests to avoid burst rate limits
       if (i > 0) await new Promise((r) => setTimeout(r, 12000 * i));
 
       let replicateResponse: Response;
@@ -105,7 +108,7 @@ export async function POST(request: NextRequest) {
               version:
                 "39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
               input: {
-                image: replicateImage,
+                image: replicateImageUrl,
                 prompt,
                 negative_prompt: negativePrompt,
                 num_inference_steps: steps ?? 30,
