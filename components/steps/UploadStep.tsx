@@ -21,6 +21,24 @@ interface UploadStepProps {
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_SIZE = 10 * 1024 * 1024;
 
+async function resizeImage(base64: string, maxPx: number): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const ratio = Math.min(maxPx / img.width, maxPx / img.height, 1);
+      const w = Math.round(img.width * ratio);
+      const h = Math.round(img.height * ratio);
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.src = base64;
+  });
+}
+
 export function UploadStep({
   uploadedImage,
   onImageUpload,
@@ -49,14 +67,16 @@ export function UploadStep({
 
       setIsProcessing(true);
       try {
-        const base64 = await fileToBase64(file);
-        const dims = await getImageDimensions(base64);
+        const rawBase64 = await fileToBase64(file);
+        // Resize to max 768px to stay under Vercel 4.5MB body limit
+        const resizedBase64 = await resizeImage(rawBase64, 768);
+        const dims = await getImageDimensions(resizedBase64);
         onImageUpload({
-          url: base64,
+          url: resizedBase64,
           file,
           width: dims.width,
           height: dims.height,
-          base64,
+          base64: resizedBase64,
         });
       } catch {
         setError("Failed to process image. Please try again.");
