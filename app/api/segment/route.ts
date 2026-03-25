@@ -83,13 +83,23 @@ export async function POST(request: NextRequest) {
       throw new Error(`Prediction failed: ${result.error}`);
     }
 
-    const masks = (result.output || []).map(
-      (maskUrl: string, i: number) => ({
-        id: `mask-${i}`,
-        score: result.metrics?.predict_time ? 0.9 - i * 0.05 : 0.9,
-        maskData: maskUrl,
-      })
-    );
+    // SAM2 output can be array of URLs, object with masks key, or single string
+    let outputArray: string[] = [];
+    if (Array.isArray(result.output)) {
+      outputArray = result.output;
+    } else if (result.output?.masks && Array.isArray(result.output.masks)) {
+      outputArray = result.output.masks;
+    } else if (typeof result.output === "string") {
+      outputArray = [result.output];
+    } else if (result.output) {
+      outputArray = Object.values(result.output).filter((v) => typeof v === "string") as string[];
+    }
+
+    const masks = outputArray.map((maskUrl: string, i: number) => ({
+      id: `mask-${i}`,
+      score: 0.9 - i * 0.05,
+      maskData: maskUrl,
+    }));
 
     return NextResponse.json({ success: true, masks, isMock: false });
   } catch (error) {
