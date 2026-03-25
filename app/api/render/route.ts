@@ -62,8 +62,10 @@ export async function POST(request: NextRequest) {
         controlNet.lineartStrength ?? 0.5;
     }
 
-    const count = Math.min(numVariations ?? 2, 4);
+    const count = Math.min(numVariations ?? 1, 2); // reduce to 1-2 to avoid rate limits
     const predPromises = Array.from({ length: count }, async (_, i) => {
+      // Stagger requests to avoid burst rate limits
+      if (i > 0) await new Promise((r) => setTimeout(r, 12000 * i));
       const response = await fetch(
         "https://api.replicate.com/v1/predictions",
         {
