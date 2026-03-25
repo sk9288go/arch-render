@@ -7,13 +7,23 @@ const MOCK_DEPTH_URL =
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { imageBase64 } = body;
+    // Accept imageUrl (data URL or http URL) or legacy imageBase64
+    const { imageUrl, imageBase64 } = body;
+    const rawImage: string | undefined = imageUrl || imageBase64;
 
-    if (!imageBase64) {
+    if (!rawImage) {
       return NextResponse.json(
-        { error: "Missing imageBase64" },
+        { error: "Missing image (imageUrl or imageBase64)" },
         { status: 400 }
       );
+    }
+
+    // Normalize to a value Replicate accepts (data URLs and http URLs both work)
+    let replicateImage: string;
+    if (rawImage.startsWith("http://") || rawImage.startsWith("https://") || rawImage.startsWith("data:")) {
+      replicateImage = rawImage;
+    } else {
+      replicateImage = `data:image/jpeg;base64,${rawImage}`;
     }
 
     const apiToken = process.env.REPLICATE_API_TOKEN;
@@ -40,7 +50,7 @@ export async function POST(request: NextRequest) {
           version:
             "35f86d664a8966eb1c3e4b8d2b7da62c1d6e2e5b1da2f3b0d0e3c1d6e2e5b1d",
           input: {
-            image: imageBase64,
+            image: replicateImage,
             model_size: "Base",
           },
         }),
@@ -55,7 +65,7 @@ export async function POST(request: NextRequest) {
           version:
             "a7535a9b5a5b6ae8e50fa1b4c30d7e15d6e2e5b1da2f3b0d0e3c1d6e2e5b1d",
           input: {
-            image: imageBase64,
+            image: replicateImage,
             detect_resolution: 512,
             image_resolution: 512,
           },
@@ -76,15 +86,31 @@ export async function POST(request: NextRequest) {
           `https://api.replicate.com/v1/predictions/${id}`,
           { headers: { Authorization: `Token ${token}` } }
         );
+        if (!res.ok) {
+          throw new Error(`Replicate poll error (${res.status}): ${await res.text()}`);
+        }
         result = await res.json();
         attempts++;
+      }
+      if (result.status === "failed") {
+        throw new Error(`Depth prediction failed: ${JSON.stringify(result.error)}`);
       }
       return result;
     };
 
+    const depthResJson = await depthRes.json();
+    const lineartResJson = await lineartRes.json();
+
+    if (!depthRes.ok) {
+      throw new Error(`Replicate depth API error (${depthRes.status}): ${JSON.stringify(depthResJson)}`);
+    }
+    if (!lineartRes.ok) {
+      throw new Error(`Replicate lineart API error (${lineartRes.status}): ${JSON.stringify(lineartResJson)}`);
+    }
+
     const [depthPred, lineartPred] = await Promise.all([
-      depthRes.json().then((p) => pollPrediction(p.id, apiToken)),
-      lineartRes.json().then((p) => pollPrediction(p.id, apiToken)),
+      pollPrediction(depthResJson.id, apiToken),
+      pollPrediction(lineartResJson.id, apiToken),
     ]);
 
     return NextResponse.json({
@@ -94,12 +120,10 @@ export async function POST(request: NextRequest) {
       isMock: false,
     });
   } catch (error) {
-    console.error("Depth error:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[depth] Error:", message);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Depth map generation failed",
-      },
+      { error: message || "Depth map generation failed" },
       { status: 500 }
     );
   }

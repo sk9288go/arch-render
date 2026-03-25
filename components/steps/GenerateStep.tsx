@@ -41,6 +41,31 @@ interface GenerateStepProps {
 
 type Phase = "idle" | "depth" | "render" | "done" | "error";
 
+/**
+ * Resize a data URL (or any img src) to at most maxPx on the longest side,
+ * encoding as JPEG at 0.82 quality. Returns a data URL.
+ * This keeps the JSON body well under Vercel's 4.5 MB limit.
+ */
+function compressToDataUrl(src: string, maxPx = 512): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const ratio = Math.min(maxPx / img.width, maxPx / img.height, 1);
+      const w = Math.round(img.width * ratio);
+      const h = Math.round(img.height * ratio);
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { reject(new Error("Canvas 2D context unavailable")); return; }
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", 0.82));
+    };
+    img.onerror = () => reject(new Error("Failed to load image for compression"));
+    img.src = src;
+  });
+}
+
 export function GenerateStep({
   uploadedImage,
   depthMapUrl,
@@ -75,6 +100,14 @@ export function GenerateStep({
     setProgress(0);
 
     try {
+      // Compress the image to max 512px before sending to APIs.
+      // This keeps the JSON body well under Vercel's 4.5 MB body limit,
+      // and Replicate accepts data URLs directly — no need to strip the prefix.
+      const compressedImageUrl = await compressToDataUrl(
+        uploadedImage.url,
+        512
+      );
+
       let dUrl = depthMapUrl;
       let lUrl = lineartUrl;
 
@@ -88,7 +121,7 @@ export function GenerateStep({
         const depthRes = await fetch("/api/depth", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64: uploadedImage.base64 }),
+          body: JSON.stringify({ imageUrl: compressedImageUrl }),
         });
         const depthData = await depthRes.json();
         if (!depthRes.ok || !depthData.success) {
@@ -117,7 +150,9 @@ export function GenerateStep({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageBase64: uploadedImage.base64,
+          // Send imageUrl (compressed data URL) — Replicate accepts data URLs directly.
+          // This avoids large base64 payloads hitting Vercel's 4.5 MB body limit.
+          imageUrl: compressedImageUrl,
           depthUrl: dUrl,
           lineartUrl: lUrl,
           prompt: generationSettings.globalPrompt,

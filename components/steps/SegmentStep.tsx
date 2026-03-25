@@ -490,7 +490,6 @@ export function SegmentStep({
         <div className="flex-1" />
         <Button
           onClick={onNext}
-          disabled={segments.length === 0}
           className="gap-2"
         >
           Continue to Prompt

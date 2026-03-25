@@ -12,6 +12,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const {
+      imageUrl,
       imageBase64,
       depthUrl,
       lineartUrl,
@@ -25,11 +26,34 @@ export async function POST(request: NextRequest) {
       controlNet,
     } = body;
 
-    if (!imageBase64 || !prompt) {
+    // Accept either imageUrl (data URL or http URL) or imageBase64 (pure base64 or data URL)
+    const rawImage: string | undefined = imageUrl || imageBase64;
+
+    if (!rawImage || !prompt) {
       return NextResponse.json(
-        { error: "Missing imageBase64 or prompt" },
+        { error: "Missing image (imageUrl or imageBase64) or prompt" },
         { status: 400 }
       );
+    }
+
+    // Normalize to a value Replicate accepts:
+    //   - http/https URLs are passed as-is
+    //   - data URLs (data:image/...;base64,...) are passed as-is (Replicate supports them)
+    //   - raw base64 strings are prefixed with a data URL header
+    let replicateImage: string;
+    if (rawImage.startsWith("http://") || rawImage.startsWith("https://")) {
+      replicateImage = rawImage;
+    } else if (rawImage.startsWith("data:")) {
+      replicateImage = rawImage;
+    } else {
+      // Raw base64 without prefix — wrap as JPEG data URL
+      replicateImage = `data:image/jpeg;base64,${rawImage}`;
+    }
+
+    // Guard: Vercel has a 4.5 MB body limit. Warn if the image portion is suspiciously large.
+    const imageSizeBytes = replicateImage.length * 0.75; // base64 overhead
+    if (imageSizeBytes > 3 * 1024 * 1024) {
+      console.warn(`[render] image is large: ~${Math.round(imageSizeBytes / 1024)}KB — consider resizing to 512px before sending`);
     }
 
     const apiToken = process.env.REPLICATE_API_TOKEN;
@@ -66,36 +90,43 @@ export async function POST(request: NextRequest) {
     const predPromises = Array.from({ length: count }, async (_, i) => {
       // Stagger requests to avoid burst rate limits
       if (i > 0) await new Promise((r) => setTimeout(r, 12000 * i));
-      const response = await fetch(
-        "https://api.replicate.com/v1/predictions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Token ${apiToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            version:
-              "39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-            input: {
-              image: imageBase64,
-              prompt,
-              negative_prompt: negativePrompt,
-              num_inference_steps: steps ?? 30,
-              guidance_scale: guidanceScale ?? 7.5,
-              strength: strength ?? 0.75,
-              seed: seed ? seed + i : undefined,
-              ...controlNetInputs,
-            },
-          }),
-        }
-      );
 
-      if (!response.ok) {
-        throw new Error(`Replicate error: ${await response.text()}`);
+      let replicateResponse: Response;
+      try {
+        replicateResponse = await fetch(
+          "https://api.replicate.com/v1/predictions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Token ${apiToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              version:
+                "39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+              input: {
+                image: replicateImage,
+                prompt,
+                negative_prompt: negativePrompt,
+                num_inference_steps: steps ?? 30,
+                guidance_scale: guidanceScale ?? 7.5,
+                strength: strength ?? 0.75,
+                seed: seed ? seed + i : undefined,
+                ...controlNetInputs,
+              },
+            }),
+          }
+        );
+      } catch (fetchErr) {
+        throw new Error(`Network error contacting Replicate: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
       }
 
-      let result: Record<string, unknown> = await response.json();
+      if (!replicateResponse.ok) {
+        const errorText = await replicateResponse.text();
+        throw new Error(`Replicate API error (${replicateResponse.status}): ${errorText}`);
+      }
+
+      let result: Record<string, unknown> = await replicateResponse.json();
       let attempts = 0;
       while (
         result.status !== "succeeded" &&
@@ -107,12 +138,19 @@ export async function POST(request: NextRequest) {
           `https://api.replicate.com/v1/predictions/${result.id}`,
           { headers: { Authorization: `Token ${apiToken}` } }
         );
+        if (!pollRes.ok) {
+          throw new Error(`Replicate poll error (${pollRes.status}): ${await pollRes.text()}`);
+        }
         result = await pollRes.json();
         attempts++;
       }
 
       if (result.status === "failed") {
-        throw new Error(`Generation failed: ${result.error}`);
+        throw new Error(`Replicate generation failed: ${JSON.stringify(result.error)}`);
+      }
+
+      if (attempts >= 60) {
+        throw new Error("Replicate generation timed out after 60s");
       }
 
       const outputUrl = Array.isArray(result.output)
@@ -134,12 +172,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, images, isMock: false });
   } catch (error) {
-    console.error("Render error:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[render] Error:", message);
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Render generation failed",
-      },
+      { error: message || "Render generation failed" },
       { status: 500 }
     );
   }
